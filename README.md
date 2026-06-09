@@ -10,7 +10,7 @@ roommate's PC ├──> one endpoint: http://localhost:11444/v1  ──> the po
 old Mac mini ─┘
 ```
 
-> Status: **alpha**. Phase 1 (pooling) works today. Phase 2 (splitting one big model across devices) is on the [roadmap](#roadmap).
+> Status: **alpha**, v0.1. Phase 1 (pooling) works today. Phase 2 (splitting one big model across devices) is on the [roadmap](#roadmap).
 
 ## Why
 
