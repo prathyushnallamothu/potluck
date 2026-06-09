@@ -44,7 +44,7 @@ docs/                 architecture and design notes
 
 ## Roadmap work (bigger bites)
 
-- **Phase 2 — model splitting**: orchestrating `llama.cpp` `rpc-server` workers for models that fit no single device. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#phase-2-model-splitting).
+- **Phase 2 polish**: translate Ollama-dialect requests for split models, retry a generation when a pipeline stage drops, smarter `--tensor-split` ratios. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#phase-2-model-splitting-implemented-in-v02).
 - **Phase 3 — fairness + security**: mTLS between agents, per-user quotas, lending credits.
 
 Open an issue to discuss before starting roadmap-sized work.

@@ -7,6 +7,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/prathyushnallamothu/potluck/internal/split"
 )
 
 // GPU describes one accelerator on a node.
@@ -38,6 +40,15 @@ type Model struct {
 	Quant      string `json:"quant,omitempty"`
 }
 
+// SplitState advertises a node's Phase 2 (model splitting) capabilities.
+type SplitState struct {
+	Worker     bool                 `json:"worker"`      // rpc-server installed: can lend memory to pipelines
+	Driver     bool                 `json:"driver"`      // llama-server installed: can host pipelines
+	RPCPort    int                  `json:"rpc_port"`    // port rpc-server listens on when recruited
+	RPCRunning bool                 `json:"rpc_running"` // rpc-server currently up
+	Pipelines  []split.PipelineInfo `json:"pipelines,omitempty"`
+}
+
 // NodeState is everything the pool knows about one node.
 type NodeState struct {
 	ID            string    `json:"id"`
@@ -53,6 +64,7 @@ type NodeState struct {
 	Loaded        []string  `json:"loaded"` // model names currently in memory
 	Active        int       `json:"active"` // in-flight inference requests
 	TotalServed   uint64    `json:"total_served"`
+	Split         SplitState `json:"split"`
 	UpdatedAt     time.Time `json:"updated_at"`
 	Self          bool      `json:"self"`
 }

@@ -67,6 +67,8 @@
   <div class="nodes" id="nodes"><div class="empty">Looking for devices…</div></div>
   <h2>Models available in the pool</h2>
   <div id="models"></div>
+  <h2 id="pipelines-h" style="display:none">Split pipelines (models running across devices)</h2>
+  <div id="pipelines"></div>
   <h2>Recent requests routed by this node</h2>
   <div id="requests"></div>
 </main>
@@ -103,12 +105,16 @@ function render(p) {
       const loaded = (n.loaded || []).some(l => l === m.name || l === m.name + ":latest");
       return `<span class="chip${loaded ? " loaded" : ""}" title="${esc(fmtBytes(m.size))}">${esc(m.name)}</span>`;
     }).join("") || `<span class="chip">no models pulled</span>`;
+    const split = n.split || {};
+    const splitTag = split.driver && split.worker ? "split: driver+worker"
+      : split.driver ? "split: driver" : split.worker ? "split: worker" : "";
     return `<div class="node">
       <div class="top"><span class="dot${fresh ? "" : " off"}"></span>
         <span class="name">${esc(n.name)}</span>
         ${n.self ? '<span class="tag">this device</span>' : ""}
         ${n.sharing ? "" : '<span class="tag">not sharing</span>'}
         ${n.ollama_ok ? "" : '<span class="tag err">ollama down</span>'}
+        ${splitTag ? `<span class="tag">${splitTag}</span>` : ""}
       </div>
       <div class="hw">${esc(gpu)} · ${n.resources.num_cpu} cores · ${esc(n.resources.os)}/${esc(n.resources.arch)}
         ${n.active ? ` · <span class="ok">${n.active} active</span>` : ""}</div>
@@ -126,6 +132,17 @@ function render(p) {
       <td>${esc(m.parameters || "—")}</td><td>${esc(m.quant || "—")}</td>
       <td>${esc((m.nodes || []).join(", "))}</td></tr>`).join("")}
   </table>` : `<div class="empty">No models in the pool yet. Run <code>ollama pull llama3.2</code> on any device.</div>`;
+
+  const pipes = [];
+  nodes.forEach(n => ((n.split || {}).pipelines || []).forEach(pl => pipes.push({...pl, driver: n.name})));
+  document.getElementById("pipelines-h").style.display = pipes.length ? "" : "none";
+  document.getElementById("pipelines").innerHTML = pipes.length ? `<table>
+    <tr><th>Model</th><th>State</th><th>Driver</th><th>RPC workers</th><th>Started</th></tr>
+    ${pipes.map(pl => `<tr><td>${esc(pl.model)}</td>
+      <td class="${pl.state === "ready" ? "ok" : pl.state === "error" ? "err" : ""}">${esc(pl.state)}${pl.error ? " — " + esc(pl.error) : ""}</td>
+      <td>${esc(pl.driver)}</td><td>${esc((pl.workers || []).join(", ") || "driver only")}</td>
+      <td>${new Date(pl.started_at).toLocaleTimeString()}</td></tr>`).join("")}
+  </table>` : "";
 
   const reqs = p.requests || [];
   document.getElementById("requests").innerHTML = reqs.length ? `<table>

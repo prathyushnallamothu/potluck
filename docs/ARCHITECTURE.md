@@ -53,15 +53,41 @@ The receiving node reads the body (capped at 64 MiB), extracts `model`, schedule
 ### Trust boundary
 `/proxy/ollama/*` is the only way peers execute on your device, and it checks `X-Potluck-Token` when a token is configured. The serving device necessarily sees plaintext prompts — inference happens there. The roadmap adds mTLS for transport; prompt privacy from the *serving device* is impossible without confidential computing, and the docs say so honestly.
 
-## Phase 2: model splitting
+## Phase 2: model splitting (implemented in v0.2)
 
-Goal: serve models that fit no single device by running them as a layer pipeline across devices (pipeline parallelism — only ~kB of activations cross the network per token, which WiFi handles; tensor parallelism does not fit WiFi).
+Serves models that fit no single device by running them across devices on
+llama.cpp's RPC backend (only ~kB of activations cross the network per token,
+which WiFi handles; tensor-parallel sync traffic would not).
 
-Plan:
-- Ship a `llama.cpp` `rpc-server` worker alongside the agent (or orchestrate an existing install).
-- The scheduler gains a second mode: when no node fits M whole, partition layers proportionally to each volunteer's free memory and launch a pipeline.
-- Weight shards are cached on lenders after first use; first-run distribution is the cold-start cost.
-- Churn handling: if a stage drops mid-generation, fail the request fast, re-partition without the lost node, and retry once.
+Flow, for a `/v1/*` request naming model M:
+
+1. `scheduler.PlanSplit` checks every eligible holder of M against
+   `Need(size) = size × 1.25` vs `Usable(free) = free × 0.8`. If someone fits
+   M whole, Phase 1 routing applies. Otherwise it picks a **driver** (a holder
+   of M with `llama-server` installed, most free memory first) and recruits
+   **workers** (nodes with `rpc-server`, by free memory) until capacity covers
+   the need.
+2. The gateway asks the driver's agent (`POST /api/pipeline/ensure`) to bring
+   the pipeline up. The driver recruits each worker (`POST /api/rpc/start`,
+   token-gated), which starts `rpc-server` exposing only devices with real
+   memory — zero-memory devices like BLAS must be excluded or drivers
+   schedule tensors onto them and crash the worker.
+3. The driver resolves M's GGUF blob from its local Ollama store (no second
+   download) and launches `llama-server --rpc w1,w2,… -ngl 999`, which
+   distributes layers across workers and its own backend by free memory.
+   Readiness is polled via `/health`; big models stream weights to workers
+   during this window.
+4. The request proxies into the pipeline (`/proxy/llama/*` on the driver,
+   model named in the `X-Potluck-Model` header). Pipelines stay warm and are
+   torn down after 10 minutes idle; agent shutdown kills all child processes.
+   Child process output is captured in `~/.potluck/logs/`.
+
+Failure handling: a worker that can't be recruited is skipped (llama-server
+fails loudly if the remainder doesn't fit); a pipeline that dies during load
+reports the error and is relaunched on the next request; if splitting is
+impossible (no binaries), the gateway falls back to Phase 1 single-node
+routing and logs why. Split pipelines speak the OpenAI dialect only —
+`/api/*` requests for oversized models fall back to Phase 1.
 
 ## Phase 3: the social layer
 

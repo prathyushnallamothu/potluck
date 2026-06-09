@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/prathyushnallamothu/potluck/internal/agent"
+	"github.com/prathyushnallamothu/potluck/internal/ollamafs"
 )
 
 // version is overridden at release time via -ldflags "-X main.version=v0.2.0".
@@ -30,6 +31,11 @@ func main() {
 	fs.StringVar(&cfg.Pool, "pool", "default", "pool name; only nodes with the same pool join together")
 	fs.StringVar(&cfg.Token, "token", "", "shared secret required for peers to run jobs on this node")
 	fs.BoolVar(&cfg.Share, "share", true, "contribute this machine's compute to the pool (false = consume only)")
+	fs.StringVar(&cfg.RPCServerBin, "rpc-server-bin", "", "path to llama.cpp rpc-server (default: find on PATH)")
+	fs.StringVar(&cfg.LlamaServerBin, "llama-server-bin", "", "path to llama.cpp llama-server (default: find on PATH)")
+	fs.IntVar(&cfg.RPCPort, "rpc-port", 50752, "port for rpc-server when this node joins a split pipeline")
+	fs.IntVar(&cfg.CtxSize, "ctx", 4096, "context size for split pipelines")
+	fs.StringVar(&cfg.ModelsDir, "models-dir", ollamafs.DefaultDir(), "Ollama model store (split pipelines reuse its GGUF blobs)")
 	showVersion := fs.Bool("version", false, "print version and exit")
 
 	fs.Usage = func() {

@@ -12,6 +12,7 @@ package gateway
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -51,10 +52,24 @@ type Pool interface {
 	SelfID() string
 }
 
+// SplitRunner is the agent's Phase 2 machinery, used when this node drives a
+// distributed pipeline. Nil means this node can't drive splits.
+type SplitRunner interface {
+	// EnsureLocal starts (or reuses) a pipeline for model on this node,
+	// recruiting the given peer agents as RPC workers, and returns the
+	// local llama-server port. Blocks through model load.
+	EnsureLocal(ctx context.Context, model string, workerAgentAddrs []string) (int, error)
+	// PipelinePort returns the port of a ready local pipeline, if any.
+	PipelinePort(model string) (int, bool)
+	// TouchPipeline marks a pipeline as recently used.
+	TouchPipeline(model string)
+}
+
 // Gateway routes inference traffic for one agent process.
 type Gateway struct {
 	pool      Pool
-	ollamaURL *url.URL // local Ollama base
+	split     SplitRunner // nil if this node can't drive split pipelines
+	ollamaURL *url.URL    // local Ollama base
 	token     string
 	log       *slog.Logger
 	client    *http.Client
@@ -82,6 +97,10 @@ func New(pool Pool, ollamaBase, token string, log *slog.Logger) (*Gateway, error
 		client: &http.Client{},
 	}, nil
 }
+
+// SetSplitRunner attaches the agent's Phase 2 machinery (done after
+// construction because the agent needs the gateway's counters first).
+func (g *Gateway) SetSplitRunner(r SplitRunner) { g.split = r }
 
 // Active returns the number of in-flight inference requests executing on
 // this node's Ollama.
@@ -121,10 +140,12 @@ func (g *Gateway) Register(mux *http.ServeMux) {
 	// Aggregated model listings.
 	mux.HandleFunc("GET /v1/models", g.handleOpenAIModels)
 	mux.HandleFunc("GET /api/tags", g.handleTags)
-	// Peer-to-peer execution path. Methods are explicit so the pattern
-	// doesn't conflict with "GET /" (dashboard) under Go 1.22 mux rules.
+	// Peer-to-peer execution paths. Methods are explicit so the patterns
+	// don't conflict with "GET /" (dashboard) under Go 1.22 mux rules.
 	mux.HandleFunc("POST /proxy/ollama/", g.handleProxy)
 	mux.HandleFunc("GET /proxy/ollama/", g.handleProxy)
+	mux.HandleFunc("POST /proxy/llama/", g.handleLlamaProxy)
+	mux.HandleFunc("GET /proxy/llama/", g.handleLlamaProxy)
 }
 
 // extractModel pulls the "model" field out of a JSON request body.
@@ -151,24 +172,45 @@ func (g *Gateway) handleInference(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	node, err := scheduler.Pick(g.pool.Nodes(), model)
+	nodes := g.pool.Nodes()
+
+	// Phase 2: if the model fits no single node, run it as a pipeline
+	// across devices. Split pipelines speak the OpenAI dialect only.
+	if strings.HasPrefix(r.URL.Path, "/v1/") {
+		plan, planErr := scheduler.PlanSplit(nodes, model)
+		if planErr != nil {
+			// Split needed but impossible — fall through to Phase 1
+			// (Ollama may still manage via CPU offload), but say why.
+			g.log.Warn("split not possible, trying single node", "model", model, "reason", planErr)
+		}
+		if plan != nil {
+			nodeName, status := g.forwardSplit(w, r, plan, model, body)
+			g.finish(start, r.URL.Path, model, nodeName, status)
+			return
+		}
+	}
+
+	node, err := scheduler.Pick(nodes, model)
 	if err != nil {
 		httpError(w, http.StatusNotFound, err.Error())
 		return
 	}
-
 	status := g.forward(w, r, node, body)
+	g.finish(start, r.URL.Path, model, node.Name, status)
+}
+
+func (g *Gateway) finish(start time.Time, path, model, nodeName string, status int) {
 	rec := RequestRecord{
 		ID:       g.reqID.Add(1),
 		Time:     start,
-		Path:     r.URL.Path,
+		Path:     path,
 		Model:    model,
-		Node:     node.Name,
+		Node:     nodeName,
 		Status:   status,
 		Duration: float64(time.Since(start).Microseconds()) / 1000.0,
 	}
 	g.record(rec)
-	g.log.Info("routed", "model", model, "node", node.Name, "path", r.URL.Path,
+	g.log.Info("routed", "model", model, "node", nodeName, "path", path,
 		"status", status, "ms", int(rec.Duration))
 }
 

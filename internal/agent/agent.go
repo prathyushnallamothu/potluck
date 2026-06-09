@@ -27,6 +27,7 @@ import (
 	"github.com/prathyushnallamothu/potluck/internal/registry"
 	"github.com/prathyushnallamothu/potluck/internal/resources"
 	"github.com/prathyushnallamothu/potluck/internal/scheduler"
+	"github.com/prathyushnallamothu/potluck/internal/split"
 )
 
 // Config controls one agent process.
@@ -38,6 +39,13 @@ type Config struct {
 	Token     string // optional shared secret for peer-to-peer execution
 	Share     bool   // contribute this node's compute to the pool
 	Version   string
+
+	// Phase 2 (model splitting via llama.cpp RPC)
+	RPCServerBin   string // path to rpc-server ("" = auto-detect on PATH)
+	LlamaServerBin string // path to llama-server ("" = auto-detect on PATH)
+	RPCPort        int    // port rpc-server listens on when recruited
+	CtxSize        int    // context size for split pipelines
+	ModelsDir      string // Ollama model store (for GGUF blob reuse)
 }
 
 type Agent struct {
@@ -50,6 +58,11 @@ type Agent struct {
 	hints   chan discovery.PeerHint
 	addrsMu sync.Mutex
 	addrs   map[string]string // peer ID -> reachable host:port, from mDNS
+
+	// Phase 2
+	bins      split.Binaries
+	worker    *split.Worker  // lend memory to peers' pipelines
+	pipelines *split.Manager // drive pipelines on this node
 }
 
 func New(cfg Config, log *slog.Logger) (*Agent, error) {
@@ -79,6 +92,16 @@ func New(cfg Config, log *slog.Logger) (*Agent, error) {
 		return nil, err
 	}
 	a.gw = gw
+
+	// Phase 2 capabilities are optional: missing llama.cpp binaries just
+	// mean this node won't participate in split pipelines.
+	a.bins = split.Detect(cfg.RPCServerBin, cfg.LlamaServerBin)
+	a.worker = split.NewWorker(a.bins.RPCServer, cfg.RPCPort, log)
+	a.pipelines = split.NewManager(a.bins.LlamaServer, 11500, log)
+	gw.SetSplitRunner(a)
+	if a.bins.RPCServer == "" && a.bins.LlamaServer == "" {
+		log.Info("model splitting disabled (rpc-server / llama-server not found; install llama.cpp with RPC support to enable)")
+	}
 	return a, nil
 }
 
@@ -139,6 +162,9 @@ func (a *Agent) Run(ctx context.Context) error {
 	a.gw.Register(mux)
 	mux.HandleFunc("GET /api/state", a.handleState)
 	mux.HandleFunc("GET /api/pool", a.handlePool)
+	mux.HandleFunc("POST /api/rpc/start", a.handleRPCStart)
+	mux.HandleFunc("POST /api/rpc/stop", a.handleRPCStop)
+	mux.HandleFunc("POST /api/pipeline/ensure", a.handlePipelineEnsure)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprintln(w, "ok")
@@ -152,6 +178,8 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 	go func() {
 		<-ctx.Done()
+		a.pipelines.StopAll()
+		a.worker.Stop()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		srv.Shutdown(shutdownCtx)
@@ -200,7 +228,14 @@ func (a *Agent) refreshSelf(ctx context.Context) {
 		Loaded:        oll.Loaded,
 		Active:        a.gw.Active(),
 		TotalServed:   a.gw.TotalServed(),
-		Self:          true,
+		Split: registry.SplitState{
+			Worker:     a.worker.Available(),
+			Driver:     a.pipelines.Available(),
+			RPCPort:    a.cfg.RPCPort,
+			RPCRunning: a.worker.Running(),
+			Pipelines:  a.pipelines.Infos(),
+		},
+		Self: true,
 	})
 }
 
