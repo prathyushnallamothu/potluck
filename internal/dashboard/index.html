@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Potluck — pool dashboard</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #181b22; --panel2: #1f232c; --border: #2a2f3a;
+    --text: #e8eaed; --muted: #9aa3af; --accent: #f59e0b; --good: #34d399;
+    --bad: #f87171; --chip: #262b36;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  header { display: flex; align-items: baseline; gap: 14px; padding: 20px 28px;
+           border-bottom: 1px solid var(--border); }
+  header h1 { font-size: 20px; margin: 0; font-weight: 600; }
+  header h1 span { color: var(--accent); }
+  header .sub { color: var(--muted); font-size: 13px; }
+  main { padding: 24px 28px; max-width: 1100px; margin: 0 auto; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+           gap: 14px; margin-bottom: 24px; }
+  .stat { background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+          padding: 14px 18px; }
+  .stat .v { font-size: 24px; font-weight: 600; }
+  .stat .k { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .05em; }
+  h2 { font-size: 14px; text-transform: uppercase; letter-spacing: .06em;
+       color: var(--muted); margin: 26px 0 12px; }
+  .nodes { display: grid; grid-template-columns: repeat(auto-fill, minmax(310px, 1fr)); gap: 14px; }
+  .node { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; }
+  .node .top { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--good); flex: none; }
+  .dot.off { background: var(--bad); }
+  .node .name { font-weight: 600; }
+  .tag { font-size: 11px; padding: 1px 8px; border-radius: 99px; background: var(--chip);
+         color: var(--muted); margin-left: auto; }
+  .node .hw { color: var(--muted); font-size: 13px; margin-bottom: 10px; }
+  .bar { height: 6px; background: var(--panel2); border-radius: 99px; overflow: hidden; margin: 4px 0 2px; }
+  .bar i { display: block; height: 100%; background: var(--accent); border-radius: 99px; }
+  .barlabel { font-size: 12px; color: var(--muted); display: flex; justify-content: space-between; }
+  .chips { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { font-size: 12px; background: var(--chip); border: 1px solid var(--border);
+          padding: 2px 9px; border-radius: 99px; }
+  .chip.loaded { border-color: var(--good); color: var(--good); }
+  table { width: 100%; border-collapse: collapse; background: var(--panel);
+          border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+  th, td { text-align: left; padding: 9px 14px; font-size: 13px; }
+  th { color: var(--muted); font-weight: 500; border-bottom: 1px solid var(--border);
+       text-transform: uppercase; font-size: 11px; letter-spacing: .05em; }
+  tr + tr td { border-top: 1px solid var(--border); }
+  .ok { color: var(--good); } .err { color: var(--bad); }
+  .empty { color: var(--muted); padding: 18px; text-align: center; }
+  footer { color: var(--muted); font-size: 12px; text-align: center; padding: 26px; }
+  footer a { color: var(--accent); text-decoration: none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🍲 pot<span>luck</span></h1>
+  <div class="sub" id="poolname"></div>
+  <div class="sub" style="margin-left:auto" id="updated"></div>
+</header>
+<main>
+  <div class="stats" id="stats"></div>
+  <h2>Devices</h2>
+  <div class="nodes" id="nodes"><div class="empty">Looking for devices…</div></div>
+  <h2>Models available in the pool</h2>
+  <div id="models"></div>
+  <h2>Recent requests routed by this node</h2>
+  <div id="requests"></div>
+</main>
+<footer>Potluck — bring your GPU, share the model · <a href="https://github.com/prathyushnallamothu/potluck">GitHub</a></footer>
+<script>
+const fmtBytes = n => {
+  if (!n) return "0 B";
+  const u = ["B","KB","MB","GB","TB"]; let i = 0;
+  while (n >= 1024 && i < u.length-1) { n /= 1024; i++; }
+  return n.toFixed(n >= 100 || i < 2 ? 0 : 1) + " " + u[i];
+};
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+function render(p) {
+  document.getElementById("poolname").textContent = "pool: " + p.pool;
+  document.getElementById("updated").textContent = "updated " + new Date().toLocaleTimeString();
+
+  const stats = [
+    [p.online_nodes, "devices online"],
+    [fmtBytes(p.total_mem), "pooled memory"],
+    [fmtBytes(p.available_mem), "available now"],
+    [(p.models || []).length, "models servable"],
+  ];
+  document.getElementById("stats").innerHTML = stats.map(([v,k]) =>
+    `<div class="stat"><div class="v">${esc(v)}</div><div class="k">${esc(k)}</div></div>`).join("");
+
+  const nodes = p.nodes || [];
+  document.getElementById("nodes").innerHTML = nodes.length ? nodes.map(n => {
+    const fresh = (Date.now() - new Date(n.updated_at).getTime()) < 20000;
+    const used = n.resources.mem_total - n.resources.mem_available;
+    const pct = n.resources.mem_total ? Math.round(100 * used / n.resources.mem_total) : 0;
+    const gpu = (n.resources.gpus || []).map(g => esc(g.name)).join(", ") || "CPU only";
+    const chips = (n.models || []).map(m => {
+      const loaded = (n.loaded || []).some(l => l === m.name || l === m.name + ":latest");
+      return `<span class="chip${loaded ? " loaded" : ""}" title="${esc(fmtBytes(m.size))}">${esc(m.name)}</span>`;
+    }).join("") || `<span class="chip">no models pulled</span>`;
+    return `<div class="node">
+      <div class="top"><span class="dot${fresh ? "" : " off"}"></span>
+        <span class="name">${esc(n.name)}</span>
+        ${n.self ? '<span class="tag">this device</span>' : ""}
+        ${n.sharing ? "" : '<span class="tag">not sharing</span>'}
+        ${n.ollama_ok ? "" : '<span class="tag err">ollama down</span>'}
+      </div>
+      <div class="hw">${esc(gpu)} · ${n.resources.num_cpu} cores · ${esc(n.resources.os)}/${esc(n.resources.arch)}
+        ${n.active ? ` · <span class="ok">${n.active} active</span>` : ""}</div>
+      <div class="bar"><i style="width:${pct}%"></i></div>
+      <div class="barlabel"><span>memory ${pct}% used</span>
+        <span>${esc(fmtBytes(n.resources.mem_available))} free of ${esc(fmtBytes(n.resources.mem_total))}</span></div>
+      <div class="chips">${chips}</div>
+    </div>`;
+  }).join("") : `<div class="empty">No devices yet — start <code>potluck</code> on another machine on this WiFi.</div>`;
+
+  const models = p.models || [];
+  document.getElementById("models").innerHTML = models.length ? `<table>
+    <tr><th>Model</th><th>Size</th><th>Params</th><th>Quant</th><th>On devices</th></tr>
+    ${models.map(m => `<tr><td>${esc(m.name)}</td><td>${esc(fmtBytes(m.size))}</td>
+      <td>${esc(m.parameters || "—")}</td><td>${esc(m.quant || "—")}</td>
+      <td>${esc((m.nodes || []).join(", "))}</td></tr>`).join("")}
+  </table>` : `<div class="empty">No models in the pool yet. Run <code>ollama pull llama3.2</code> on any device.</div>`;
+
+  const reqs = p.requests || [];
+  document.getElementById("requests").innerHTML = reqs.length ? `<table>
+    <tr><th>Time</th><th>Model</th><th>Served by</th><th>Endpoint</th><th>Status</th><th>Duration</th></tr>
+    ${reqs.slice(0, 25).map(r => `<tr>
+      <td>${new Date(r.time).toLocaleTimeString()}</td><td>${esc(r.model)}</td>
+      <td>${esc(r.node)}</td><td>${esc(r.path)}</td>
+      <td class="${r.status < 400 ? "ok" : "err"}">${r.status}</td>
+      <td>${r.duration_ms >= 1000 ? (r.duration_ms/1000).toFixed(1) + " s" : Math.round(r.duration_ms) + " ms"}</td>
+    </tr>`).join("")}
+  </table>` : `<div class="empty">No requests yet. Try:<br>
+    <code>curl localhost:PORT/v1/chat/completions -d '{"model":"llama3.2","messages":[{"role":"user","content":"hi"}]}'</code></div>`;
+}
+
+async function tick() {
+  try {
+    const r = await fetch("/api/pool");
+    render(await r.json());
+  } catch (e) { /* agent restarting; keep last view */ }
+}
+tick();
+setInterval(tick, 2000);
+</script>
+</body>
+</html>
